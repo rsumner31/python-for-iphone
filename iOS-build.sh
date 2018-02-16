@@ -5,7 +5,9 @@ set -o errexit
 # http://randomsplat.com/id5-cross-compiling-python-for-embedded-linux.html
 # http://latenitesoft.blogspot.com/2008/10/iphone-programming-tips-building-unix.html
 
-# download python and patch if they aren't there
+export MIN_IOS_VERSION=5.0
+
+# download python if it isn't there
 if [[ ! -a Python-2.6.5.tar.bz2 ]]; then
     curl http://www.python.org/ftp/python/2.6.5/Python-2.6.5.tar.bz2 > Python-2.6.5.tar.bz2
 fi
@@ -16,44 +18,70 @@ rm -rf Python-2.6.5
 # build for native machine
 tar -xjf Python-2.6.5.tar.bz2
 pushd ./Python-2.6.5
-CC="clang -m32" ./configure
-make python.exe Parser/pgen
+
+./configure CC="xcrun clang"
+xcrun make -j 3 python.exe Parser/pgen
+
 mv python.exe hostpython
 mv Parser/pgen Parser/hostpgen
-mv libpython2.6.a hostlibpython2.6.a
-make distclean
+
+xcrun make distclean
 
 # patch python to cross-compile
 patch -p1 < ../Python-2.6.5-xcompile.patch
 
-#set up environment variables for cross compilation
-export DEVROOT="/Developer/Platforms/iPhoneOS.platform/Developer"
-export SDKROOT="$DEVROOT/SDKs/iPhoneOS4.0.sdk"
-export CPPFLAGS="-I$SDKROOT/usr/lib/gcc/arm-apple-darwin10/4.2.1/include/ -I$SDKROOT/usr/include/"
-export CFLAGS="$CPPFLAGS -pipe -no-cpp-precomp -isysroot $SDKROOT"
-export LDFLAGS="-isysroot $SDKROOT -Lextralibs/"
-export CPP="/usr/bin/cpp $CPPFLAGS"
+# set up environment variables for simulator compilation
+export SDK="iphonesimulator"
+export SDKROOT=$(xcodebuild -version -sdk "$SDK" Path)
+export IOS_COMPILER=$(xcrun -find -sdk "$SDK" llvm-gcc)
+export LD=$(xcrun -find -sdk "$SDK" ld)
 
-# make a link to a differently named library for who knows what reason
-mkdir extralibs
-ln -s "$SDKROOT/usr/lib/libgcc_s.1.dylib" extralibs/libgcc_s.10.4.dylib
+export CFLAGS="-m32 -isysroot $SDKROOT -miphoneos-version-min=$MIN_IOS_VERSION"
+export LDFLAGS="-isysroot $SDKROOT -static-libgcc -miphoneos-version-min=$MIN_IOS_VERSION"
+export CPP=$(xcrun -find -sdk "$SDK" cpp)
+
+# build for iPhone Simulator
+./configure CC="$IOS_COMPILER $CFLAGS" \
+            --disable-toolbox-glue \
+            --host=i386-apple-darwin
+
+xcrun make -j 3 HOSTPYTHON=./hostpython HOSTPGEN=./Parser/hostpgen \
+     CROSS_COMPILE_TARGET=yes
+
+mv libpython2.6.a libpython2.6-i386.a
+
+xcrun make distclean
+
+# set up environment variables for cross compilation
+export SDK="iphoneos"
+export SDKROOT=$(xcodebuild -version -sdk "$SDK" Path)
+export IOS_COMPILER=$(xcrun -find -sdk "$SDK" llvm-gcc)
+export LD=$(xcrun -find -sdk "$SDK" ld)
+
+if [ ! -d "$SDKROOT" ]; then
+    echo "SDKROOT doesn't exist. SDKROOT=$SDKROOT"
+    exit 1
+fi
+
+if [ ! -f "$IOS_COMPILER" ]; then
+    echo "Error: compiler not found at $IOS_COMPILER"
+    exit 1
+fi
+
+export CFLAGS="-isysroot $SDKROOT -miphoneos-version-min=$MIN_IOS_VERSION -arch armv7"
+export LDFLAGS="-isysroot $SDKROOT -static-libgcc -miphoneos-version-min=$MIN_IOS_VERSION -arch armv7"
+export CPP=$(xcrun -find -sdk "$SDK" cpp)
 
 # build for iPhone
-./configure CC="$DEVROOT/usr/bin/arm-apple-darwin10-llvm-gcc-4.2" \
-            LD="$DEVROOT/usr/bin/ld" --host=armv6-apple-darwin --prefix=/python
+./configure CC="$IOS_COMPILER $CFLAGS" \
+            --disable-toolbox-glue \
+            --host=arm-apple-darwin
 
-# comment out lines that break build (ugly hack)
-sed -i.bak -e 's/MACHDEP_OBJS=/#&/' -e 's/LINKFORSHARED=/#&/' Makefile
-
-make HOSTPYTHON=./hostpython HOSTPGEN=./Parser/hostpgen \
-     CROSS_COMPILE_TARGET=yes
+make -j 3 HOSTPYTHON=./hostpython HOSTPGEN=./Parser/hostpgen \
+    CROSS_COMPILE_TARGET=yes
 
 make install HOSTPYTHON=./hostpython CROSS_COMPILE_TARGET=yes prefix="$PWD/_install"
 
-# package library files
-pushd _install/lib/python2.6
-zip -r -y python26.zip .
-popd
 pushd _install/lib
 mv libpython2.6.a libpython2.6-arm.a
-lipo -create -output libpython2.6.a ../../hostlibpython2.6.a libpython2.6-arm.a
+lipo -create -output libpython2.6.a ../../libpython2.6-i386.a libpython2.6-arm.a
