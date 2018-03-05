@@ -34,4 +34,7 @@ directory `lib' into your resources folder. You will also need to add
 Known bug:
  * spaces cannot be present in path (most likely an issue with the Python Makefile)
 
+Known bug:
+ * spaces cannot be present in path (most likely an issue with the Python Makefile
+
 
